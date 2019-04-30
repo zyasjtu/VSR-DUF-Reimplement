@@ -70,28 +70,32 @@ def get_x(path):
     dir_frames=glob.glob(path+"*.png")
     dir_frames.sort()
     frames=[]
+    decoded=[]
     for f in dir_frames:
         frames.append(LoadImage(f))
-    frames = np.asarray(frames) # print(frames.shape) (20, 100, 115, 3)
-    frames_padded = np.lib.pad(frames, pad_width=((T_in // 2, T_in // 2), (0, 0), (0, 0), (0, 0)), mode='constant') # print(frames_padded.shape) (26, 100, 115, 3)
-    return frames,frames_padded
+        decoded.append(tf.image.decode_png(f))
+    frames = np.asarray(frames) #print(frames.shape) #(20, 100, 115, 3)
+    frames_padded = np.lib.pad(frames, pad_width=((T_in // 2, T_in // 2), (0, 0), (0, 0), (0, 0)), mode='constant') #print(frames_padded.shape) #(26, 100, 115, 3)
+    return frames,frames_padded,decoded
 
 def get_y(path):
     dir_frames = glob.glob(path+"*.png")
     dir_frames.sort()
     frames = []
+    decoded = []
     for f in dir_frames:
         frames.append(LoadImage(f))
+        decoded.append(tf.image.decode_png(f))
     frames = np.asarray(frames)
-    return frames
+    return frames,decoded
 
 """
 train datasets
 """
-x_train_path='./data/x_train_data4x/'
-y_train_path='./data/y_train_data/'
-x_train_data,x_train_data_padded=get_x(x_train_path) # print(x_data_padded.shape) (26, 100, 115, 3)
-y_train_data=get_y(y_train_path) # print(y_data.shape) (20, 400, 460, 3)
+x_train_path='/volume/data/FRVSR_VID4/LR/foliage/'
+y_train_path='/volume/data/FRVSR_VID4/HR/foliage/'
+x_train_data,x_train_data_padded,x_decoded=get_x(x_train_path) # print(x_data_padded.shape) (26, 100, 115, 3)
+y_train_data,y_decoded=get_y(y_train_path) #print(y_train_data.shape) #(20, 400, 460, 3)
 
 y_true=[]
 for i in range(len(y_train_data)):
@@ -102,10 +106,10 @@ y_train_data=y_true
 """
 valid datasets
 """
-x_valid_path='./data/x_valid_data4x/'
-y_valid_path='./data/y_valid_data/'
-x_valid_data,x_valid_data_padded=get_x(x_valid_path) # print(x_data_padded.shape) (26, 100, 115, 3)
-y_valid_data=get_y(y_valid_path) # print(y_data.shape) (20, 400, 460, 3)
+x_valid_path='/volume/data/FRVSR_VID4/LR/walk/'
+y_valid_path='/volume/data/FRVSR_VID4/HR/walk/'
+x_valid_data,x_valid_data_padded,x_decoded=get_x(x_valid_path) # print(x_data_padded.shape) (26, 100, 115, 3)
+y_valid_data,y_decoded=get_y(y_valid_path) #print(y_valid_data.shape) #(20, 400, 460, 3)
 
 y_true=[]
 for i in range(len(y_valid_data)):
@@ -205,11 +209,12 @@ x += Rx # Tensor("add_18:0", shape=(?, ?, ?, ?, 3), dtype=float32)
 out_H=tf.clip_by_value(x,0,1,name='out_H')
 
 cost=Huber(y_true=H_out_true,y_pred=out_H,delta=0.01)
+psnr=tf.image.psnr(H_out_true[0,0]*255,out_H[0,0]*255,max_val=255)
 
 learning_rate=0.001
 learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=tf.float32,name='learning_rate')
 learning_rate_decay_op = learning_rate.assign(learning_rate * 0.9)
-optimizer=tf.train.AdamOptimizer(learning_rate).minimize(cost)
+optimizer=tf.train.AdamOptimizer(learning_rate).minimize(cost-psnr)
 
 # total train epochs
 num_epochs=100
@@ -225,7 +230,9 @@ with tf.Session(config=config) as sess:
         if global_step!=0 & np.mod(global_step,10)==0:
             sess.run(learning_rate_decay_op)
         total_train_loss = 0
+        total_train_psnr = 0
         total_valid_loss = 0
+        total_valid_psnr = 0
         print("-------------------------- Epoch {:3d} ----------------------------".format(global_step))
         for i in range(5):
             print("---------- optimize sess.run start ----------")
@@ -233,25 +240,29 @@ with tf.Session(config=config) as sess:
                 in_L = x_train_data_padded[j:j + T_in]  # select T_in frames
                 in_L = in_L[np.newaxis, :, :, :, :]
                 sess.run(optimizer,feed_dict={H_out_true:y_train_data[j],L:in_L,is_train: True})
-                print("optimize:"+ str(i)+" "+str(j) +" finished.")
-        print("---------- train cost sess.run start -----------")
+                #print("optimize:"+ str(i)+" "+str(j) +" finished.")
+        print("---------- cost sess.run start -----------")
         for j in range(x_train_data.shape[0]):
             in_L = x_train_data_padded[j:j + T_in]  # select T_in frames
             in_L = in_L[np.newaxis, :, :, :, :]
-            train_loss = sess.run(cost, feed_dict={H_out_true: y_train_data[j], L: in_L, is_train: True})
+            train_loss,train_psnr = sess.run([cost,psnr], feed_dict={H_out_true: y_train_data[j], L: in_L, is_train: True})
             total_train_loss = total_train_loss + train_loss
+            total_train_psnr += train_psnr
             # print('this single train cost: {:.7f}'.format(train_loss))
-            print("train cost :" + str(i) + " " + str(j) + " finished.")
+            #print("train cost :" + str(i) + " " + str(j) + " finished.")
         for j in range(x_valid_data.shape[0]):
             in_L = x_valid_data_padded[j:j + T_in]  # select T_in frames
             in_L = in_L[np.newaxis, :, :, :, :]
-            valid_loss = sess.run(cost, feed_dict={H_out_true: y_valid_data[j], L: in_L, is_train: True})
+            valid_loss,valid_psnr = sess.run([cost, psnr], feed_dict={H_out_true: y_valid_data[j], L: in_L, is_train: True})
             total_valid_loss = total_valid_loss + valid_loss
+            total_valid_psnr += valid_psnr
             # print('this single valid cost: {:.7f}'.format(valid_loss))
-            print("valid cost :" + str(i) + " " + str(j) + " finished.")
-        avg_train_loss=total_train_loss/16/x_train_data.shape[0]
-        avg_valid_loss=total_valid_loss/16/x_valid_data.shape[0]
-        print("Epoch - {:2d}, avg loss on train set: {:.7f}, avg loss on valid set: {:.7f}.".format(global_step, avg_train_loss,avg_valid_loss))
+            #print("valid cost :" + str(i) + " " + str(j) + " finished.")
+        avg_train_loss=total_train_loss/x_train_data.shape[0]
+        avg_train_psnr=total_train_psnr/x_train_data.shape[0]
+        avg_valid_loss=total_valid_loss/x_valid_data.shape[0]
+        avg_valid_psnr=total_valid_psnr/x_valid_data.shape[0]
+        print("Epoch - {:2d}, avg train loss: {:.7f}, avg train psnr: {:.7f}, avg valid loss: {:.7f}, avg valid psnr: {:.7f}".format(global_step, avg_train_loss, avg_train_psnr, avg_valid_loss, avg_valid_psnr))
 
         if global_step==0:
             with open('./logs/pb_graph_log.txt', 'w') as f:
@@ -262,4 +273,4 @@ with tf.Session(config=config) as sess:
 
         tf.train.write_graph(sess.graph_def, '.', './checkpoint/duf_'+str(global_step)+'.pbtxt')
         saver.save(sess, save_path="./checkpoint/duf",global_step=global_step)
-        freeze_graph(check_point_folder='./checkpoint/',model_folder='./model',pb_name='My_Duf_'+str(global_step)+'.pb')
+        #freeze_graph(check_point_folder='./checkpoint/',model_folder='./model',pb_name='My_Duf_'+str(global_step)+'.pb')

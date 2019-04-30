@@ -21,25 +21,29 @@ def get_x(path):
     dir_frames=glob.glob(path+"*.png")
     dir_frames.sort()
     frames=[]
+    decoded = []
     for f in dir_frames:
         frames.append(LoadImage(f))
+        decoded.append(tf.image.decode_png(f))
     frames = np.asarray(frames) # print(frames.shape) (20, 100, 115, 3)
     frames_padded = np.lib.pad(frames, pad_width=((T_in // 2, T_in // 2), (0, 0), (0, 0), (0, 0)), mode='constant') # print(frames_padded.shape) (26, 100, 115, 3)
-    return frames,frames_padded
+    return frames,frames_padded,decoded
 
 def get_y(path):
     dir_frames = glob.glob(path+"*.png")
     dir_frames.sort()
     frames = []
+    decoded = []
     for f in dir_frames:
         frames.append(LoadImage(f))
+        decoded.append(tf.image.decode_png(f))
     frames = np.asarray(frames)
-    return frames
+    return frames,decoded
 
 x_path='./data/x_test_data4x/'
 y_path='./data/y_test_data/'
-x_data,x_data_padded=get_x(x_path) # print(x_data_padded.shape) (26, 100, 115, 3)
-y_data=get_y(y_path) # print(y_data.shape) (20, 400, 460, 3)
+x_data,x_data_padded,x_decoded=get_x(x_path) # print(x_data_padded.shape) (26, 100, 115, 3)
+y_data,y_decoded=get_y(y_path) # print(y_data.shape) (20, 400, 460, 3)
 
 y_true=[]
 for i in range(len(y_data)):
@@ -47,9 +51,10 @@ for i in range(len(y_data)):
 y_true=np.asarray(y_true)
 y_data=y_true
 
+
 with tf.Graph().as_default():
     output_graph_def = tf.GraphDef()
-    output_graph_path = './model/My_Duf_2.pb'
+    output_graph_path = './model/My_Duf.pb'
 
     with gfile.FastGFile(output_graph_path,"rb") as f:
         output_graph_def.ParseFromString(f.read())
@@ -65,6 +70,10 @@ with tf.Graph().as_default():
                 if 'use_locking' in node.attr: del node.attr['use_locking']
         _ = tf.import_graph_def(output_graph_def,name="")
 
+    psnr_x = tf.placeholder(dtype=tf.float32, shape=[None, None, 3])
+    psnr_y = tf.placeholder(dtype=tf.float32, shape=[None, None, 3])
+    psnr_z = tf.image.psnr(psnr_y, psnr_x, max_val=255)
+
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
         input = sess.graph.get_tensor_by_name("L_in:0")
@@ -72,6 +81,7 @@ with tf.Graph().as_default():
         is_train=sess.graph.get_tensor_by_name('is_train:0')
 
         total_loss=0
+        total_psnr=0
         for j in range(x_data.shape[0]):
             in_L = x_data_padded[j:j + T_in]  # select T_in frames
             in_L = in_L[np.newaxis, :, :, :, :]
@@ -81,7 +91,11 @@ with tf.Graph().as_default():
             cost = Huber(y_true=y_data[j], y_pred=y_out, delta=0.01)
             loss = sess.run(cost)
             total_loss = total_loss+loss
-            print('this single test cost: {:.7f}'.format(loss))
+
+            psnr = sess.run(psnr_z, feed_dict={psnr_y:y_data[j][0,0]*255, psnr_x:y_out[0,0]*255})
+            total_psnr += psnr
+            print('this single test cost: {:.7f}, psnr: {:.7f}'.format(loss, psnr))
 
         avg_test_loss=total_loss/x_data.shape[0]
-        print("avg test cost: {:.7f}".format(avg_test_loss))
+        avg_test_psnr=total_psnr/x_data.shape[0]
+        print("avg test cost: {:.7f}, psnr: {:.7f}".format(avg_test_loss, avg_test_psnr))
