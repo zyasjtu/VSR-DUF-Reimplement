@@ -6,6 +6,9 @@ import glob
 from tensorflow.python.framework import graph_util
 import dataset_parser
 import random
+import time
+
+restore_from = -1
 
 # Size of input temporal radius
 T_in = 7
@@ -108,67 +111,102 @@ psnr=tf.image.psnr(H_out_true[0,0]*255,out_H[0,0]*255,max_val=255)
 
 learning_rate=0.001
 learning_rate = tf.Variable(float(learning_rate), trainable=False, dtype=tf.float32,name='learning_rate')
-learning_rate_decay_op = learning_rate.assign(learning_rate * 0.9)
+learning_rate_decay_op = learning_rate.assign(learning_rate * 0.8)
 optimizer=tf.train.AdamOptimizer(learning_rate).minimize(cost)
 
 # total train epochs
 num_epochs=100
-
 
 saver = tf.train.Saver()
 # Session
 config = tf.ConfigProto()
 config.gpu_options.allow_growth=True
 with tf.Session(config=config) as sess:
-    sess.run(tf.global_variables_initializer())
-    for global_step in range(num_epochs):
-        if global_step!=0 & np.mod(global_step,10)==0:
+    if restore_from < 0:
+        print('initializing...')
+        sess.run(tf.global_variables_initializer())
+        restore_from = -1
+    else:
+        print('restoring...')
+        saver.restore(sess, './checkpoint/duf-' + str(restore_from))
+    for global_step in range(restore_from+1, num_epochs):
+        f=open('./logs/log-' + str(global_step) + '.txt', 'w')
+        if global_step!=0 & np.mod(global_step,1)==0:
             sess.run(learning_rate_decay_op)
 
-        print("-------------------------- Epoch {:3d} ----------------------------".format(global_step))
+        print("-------------------------- Epoch {:3d} ----------------------------".format(global_step) + str(sess.run(learning_rate)))
+        f.writelines("-------------------------- Epoch {:3d} ----------------------------\n".format(global_step))
+        f.flush()
         idx = range(len(dataset_parser.train_lr_list))
         random.shuffle(idx)
         total_train_loss = 0
         total_train_psnr = 0
         for i in idx:
+            start = time.time()
             x_train_data, x_train_data_padded = dataset_parser.get_x(dataset_parser.train_lr_list[i], T_in)
             _, y_train_data = dataset_parser.get_y(dataset_parser.train_hr_list[i])
+            end = time.time()
+            print("data parse time: " + str(end-start))
+            f.writelines("data parse time: " + str(end-start) + '\n')
+            f.flush()
 
             print("---------- optimize sess.run start ----------" + dataset_parser.train_lr_list[i])
+            f.writelines("---------- optimize sess.run start ----------" + dataset_parser.train_lr_list[i] + '\n')
+            f.flush()
+            start = time.time()
             for j in range(x_train_data.shape[0]):
                 in_L = x_train_data_padded[j:j + T_in]  # select T_in frames
                 in_L = in_L[np.newaxis, :, :, :, :]
                 sess.run(optimizer,feed_dict={H_out_true:y_train_data[j],L:in_L,is_train: True})
-
+            end = time.time()
+            print("optimize run time: " + str(end-start))
+            f.writelines("optimize run time: " + str(end-start) + '\n')
+            f.flush()
+            
             print("---------- cost sess.run start -----------" + str(total_train_loss))
+            f.writelines("---------- cost sess.run start -----------" + str(total_train_loss) + '\n')
+            f.flush()
+            start = time.time()
             for j in range(x_train_data.shape[0]):
                 in_L = x_train_data_padded[j:j + T_in]  # select T_in frames
                 in_L = in_L[np.newaxis, :, :, :, :]
                 train_loss,train_psnr = sess.run([cost,psnr], feed_dict={H_out_true: y_train_data[j], L: in_L, is_train: True})
                 total_train_loss = total_train_loss + train_loss
                 total_train_psnr += train_psnr
-
+            end = time.time()
+            print("cost run time: " + str(end-start))
+            f.writelines("cost run time: " + str(end-start) + '\n')
+            f.flush()
+            
         total_valid_loss = 0
         total_valid_psnr = 0
-
         for i in range(len(dataset_parser.valid_lr_list)):
             x_valid_data, x_valid_data_padded = dataset_parser.get_x(dataset_parser.valid_lr_list[i], T_in)
             _, y_valid_data = dataset_parser.get_y(dataset_parser.valid_hr_list[i])
 
             print("---------- valid sess.run start -----------" + str(total_valid_loss))
+            f.writelines("---------- valid sess.run start -----------" + str(total_valid_loss) + '\n')
+            f.flush()
+            start = time.time()
             for j in range(x_valid_data.shape[0]):
                 in_L = x_valid_data_padded[j:j + T_in]  # select T_in frames
                 in_L = in_L[np.newaxis, :, :, :, :]
                 valid_loss,valid_psnr = sess.run([cost, psnr], feed_dict={H_out_true: y_valid_data[j], L: in_L, is_train: True})
                 total_valid_loss = total_valid_loss + valid_loss
                 total_valid_psnr += valid_psnr
-
+            end = time.time()
+            print("cost valid time: " + str(end-start))
+            f.writelines("cost valid time: " + str(end-start) + '\n')
+            f.flush()
+            
         avg_train_loss=total_train_loss/100.0/len(dataset_parser.train_lr_list)
         avg_train_psnr=total_train_psnr/100.0/len(dataset_parser.train_lr_list)
         avg_valid_loss=total_valid_loss/100.0/len(dataset_parser.valid_lr_list)
         avg_valid_psnr=total_valid_psnr/100.0/len(dataset_parser.valid_lr_list)
         print("Epoch - {:2d}, avg train loss: {:.7f}, avg train psnr: {:.7f}, avg valid loss: {:.7f}, avg valid psnr: {:.7f}".format(global_step, avg_train_loss, avg_train_psnr, avg_valid_loss, avg_valid_psnr))
-
+        f.writelines("Epoch - {:2d}, avg train loss: {:.7f}, avg train psnr: {:.7f}, avg valid loss: {:.7f}, avg valid psnr: {:.7f}\n".format(global_step, avg_train_loss, avg_train_psnr, avg_valid_loss, avg_valid_psnr))
+        f.flush()
+            
         if global_step==0:
             with open('./logs/pb_graph_log.txt', 'w') as f:
                 f.write(str(sess.graph_def)) 
